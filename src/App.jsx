@@ -114,7 +114,7 @@ function EventoHeader({ config }) {
   return (
     <div style={{ marginBottom: 24 }}>
       {config.flyer && (
-        <img src={config.flyer} alt="Flyer del evento" style={{ width: "100%", borderRadius: 10, marginBottom: 16, maxHeight: 320, objectFit: "cover" }} />
+        <img src={config.flyer} alt="Flyer del evento" style={{ width: "100%", borderRadius: 10, marginBottom: 16, maxHeight: 600, objectFit: "contain" }} />
       )}
       <h1 style={s.h1}>{config.nombre}</h1>
       {config.descripcion && (
@@ -452,7 +452,7 @@ function OrganizerApp() {
                 </button>
                 {config.flyer && (
                   <div style={{ marginTop: 10 }}>
-                    <img src={config.flyer} alt="Flyer" style={{ width: "100%", borderRadius: 8, maxHeight: 200, objectFit: "cover" }} />
+                    <img src={config.flyer} alt="Flyer" style={{ width: "100%", borderRadius: 8, maxHeight: 600, objectFit: "contain" }} />
                     <button onClick={() => updateConfig({ flyer: null })} style={{ ...s.btnSm, marginTop: 8, color: "#A32D2D", border: "1px solid #E24B4A" }}>
                       Eliminar imagen
                     </button>
