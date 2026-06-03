@@ -2,6 +2,8 @@ import { useState, useEffect, useRef } from "react";
 
 const ORGANIZER_PASSWORD = "swag2024";
 const MP_ACCESS_TOKEN = import.meta.env.VITE_MP_ACCESS_TOKEN;
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
+const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
 const COLORS = {
   hold: { bg: "#FAEEDA", text: "#854F0B", border: "#EF9F27" },
@@ -21,7 +23,7 @@ const DEFAULT_CONFIG = {
   nombre: "Swag Running Event",
   descripcion: "",
   flyer: null,
-  monto: 5000,
+  monto: 20000,
 };
 
 function generateId() {
@@ -32,23 +34,54 @@ function formatMoney(n) {
   return `$${Number(n).toLocaleString("es-AR")}`;
 }
 
-function getConfig() {
-  try {
-    const c = JSON.parse(localStorage.getItem("eventoConfig") || "{}");
-    return { ...DEFAULT_CONFIG, ...c };
-  } catch { return DEFAULT_CONFIG; }
+async function sbFetch(path, options = {}) {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
+    ...options,
+    headers: {
+      "apikey": SUPABASE_KEY,
+      "Authorization": `Bearer ${SUPABASE_KEY}`,
+      "Content-Type": "application/json",
+      "Prefer": options.prefer || "",
+      ...options.headers,
+    },
+  });
+  if (res.status === 204) return null;
+  return res.json();
 }
 
-function saveConfig(c) {
-  localStorage.setItem("eventoConfig", JSON.stringify(c));
+async function getConfig() {
+  const data = await sbFetch("config?id=eq.evento&select=valor");
+  if (data && data[0]) return { ...DEFAULT_CONFIG, ...data[0].valor };
+  return DEFAULT_CONFIG;
 }
 
-function getRegistros() {
-  try { return JSON.parse(localStorage.getItem("registros") || "[]"); } catch { return []; }
+async function saveConfig(valor) {
+  await sbFetch("config?id=eq.evento", {
+    method: "PATCH",
+    prefer: "return=minimal",
+    body: JSON.stringify({ valor }),
+  });
 }
 
-function saveRegistros(r) {
-  localStorage.setItem("registros", JSON.stringify(r));
+async function getRegistros() {
+  const data = await sbFetch("registros?order=fecha.desc");
+  return data || [];
+}
+
+async function saveRegistro(reg) {
+  await sbFetch("registros", {
+    method: "POST",
+    prefer: "return=minimal",
+    body: JSON.stringify(reg),
+  });
+}
+
+async function updateRegistroStatus(id, status) {
+  await sbFetch(`registros?id=eq.${id}`, {
+    method: "PATCH",
+    prefer: "return=minimal",
+    body: JSON.stringify({ status }),
+  });
 }
 
 function Badge({ status }) {
@@ -135,13 +168,8 @@ async function crearPreferencia(monto, nombre, email, dni, regId, eventoNombre) 
       "Authorization": `Bearer ${MP_ACCESS_TOKEN}`,
     },
     body: JSON.stringify({
-      items: [{
-        title: eventoNombre,
-        quantity: 1,
-        unit_price: monto,
-        currency_id: "ARS",
-      }],
-      payer: { name: nombre, email: email },
+      items: [{ title: eventoNombre, quantity: 1, unit_price: monto, currency_id: "ARS" }],
+      payer: { name: nombre, email },
       external_reference: regId,
       back_urls: {
         success: `https://swag-running-hold.vercel.app/confirmacion?id=${regId}`,
@@ -187,8 +215,20 @@ export default function App() {
 function ConfirmacionApp() {
   const params = new URLSearchParams(window.location.search);
   const regId = params.get("id");
-  const registros = getRegistros();
-  const reg = registros.find(r => r.id === regId);
+  const [reg, setReg] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    async function load() {
+      const data = await sbFetch(`registros?id=eq.${regId}&select=*`);
+      if (data && data[0]) setReg(data[0]);
+      setLoading(false);
+    }
+    if (regId) load();
+    else setLoading(false);
+  }, [regId]);
+
+  if (loading) return <div style={{ ...s.container, textAlign: "center", paddingTop: 60 }}><p style={{ color: "#666" }}>Cargando...</p></div>;
 
   if (!reg) return (
     <div style={s.container}>
@@ -232,7 +272,11 @@ function PublicApp() {
   const [form, setForm] = useState({ nombre: "", email: "", dni: "" });
   const [error, setError] = useState(hasError ? "Hubo un problema con el pago. Intentá de nuevo." : "");
   const [loading, setLoading] = useState(false);
-  const config = getConfig();
+  const [config, setConfig] = useState(DEFAULT_CONFIG);
+
+  useEffect(() => {
+    getConfig().then(setConfig);
+  }, []);
 
   async function handleSubmit() {
     if (!form.nombre.trim() || !form.email.trim() || !form.dni.trim()) {
@@ -257,7 +301,7 @@ function PublicApp() {
       fecha: new Date().toISOString(),
       payment_id: null,
     };
-    saveRegistros([newReg, ...getRegistros()]);
+    await saveRegistro(newReg);
 
     if (MP_ACCESS_TOKEN) {
       try {
@@ -266,13 +310,12 @@ function PublicApp() {
           window.location.href = pref.init_point;
           return;
         }
-      } catch (e) {
+      } catch {
         setError("Hubo un problema al conectar con Mercado Pago. Intentá de nuevo.");
         setLoading(false);
         return;
       }
     }
-
     window.location.href = `/confirmacion?id=${id}`;
   }
 
@@ -312,27 +355,41 @@ function OrganizerApp() {
   const [pass, setPass] = useState("");
   const [passError, setPassError] = useState("");
   const [view, setView] = useState("dashboard");
-  const [registros, setRegistros] = useState(getRegistros());
-  const [config, setConfigState] = useState(getConfig());
+  const [registros, setRegistros] = useState([]);
+  const [config, setConfigState] = useState(DEFAULT_CONFIG);
   const [search, setSearch] = useState("");
   const [scanCode, setScanCode] = useState("");
   const [scanned, setScanned] = useState(null);
   const [scanError, setScanError] = useState("");
   const [toast, setToast] = useState("");
   const [actionLoading, setActionLoading] = useState(false);
+  const [pageLoading, setPageLoading] = useState(true);
   const fileRef = useRef(null);
 
-  function refresh() { setRegistros(getRegistros()); }
+  useEffect(() => {
+    async function load() {
+      const [cfg, regs] = await Promise.all([getConfig(), getRegistros()]);
+      setConfigState(cfg);
+      setRegistros(regs);
+      setPageLoading(false);
+    }
+    load();
+  }, []);
+
+  async function refresh() {
+    const regs = await getRegistros();
+    setRegistros(regs);
+  }
 
   function showToast(msg) {
     setToast(msg);
     setTimeout(() => setToast(""), 3000);
   }
 
-  function updateConfig(updates) {
+  async function updateConfig(updates) {
     const updated = { ...config, ...updates };
     setConfigState(updated);
-    saveConfig(updated);
+    await saveConfig(updated);
   }
 
   function handleFlyer(e) {
@@ -348,9 +405,9 @@ function OrganizerApp() {
     else setPassError("Contraseña incorrecta.");
   }
 
-  function handleScan() {
+  async function handleScan() {
     const code = scanCode.trim().toUpperCase();
-    const all = getRegistros();
+    const all = await getRegistros();
     const found = all.find(r => r.qr === code || r.id === code.replace("SWAG-", ""));
     if (!found) { setScanError("No se encontró ningún corredor con ese código."); setScanned(null); return; }
     setScanError("");
@@ -359,11 +416,9 @@ function OrganizerApp() {
 
   async function confirmar(reg) {
     setActionLoading(true);
-    if (MP_ACCESS_TOKEN && reg.payment_id && !reg.payment_id.startsWith("PAY-SIM")) {
-      await liberarHoldMP(reg.payment_id);
-    }
-    const all = getRegistros().map(r => r.id === reg.id ? { ...r, status: "presente" } : r);
-    saveRegistros(all); setScanned(null); setScanCode(""); refresh();
+    if (MP_ACCESS_TOKEN && reg.payment_id) await liberarHoldMP(reg.payment_id);
+    await updateRegistroStatus(reg.id, "presente");
+    setScanned(null); setScanCode(""); await refresh();
     setActionLoading(false);
     showToast(`✓ Presencia confirmada — ${reg.nombre}. Hold liberado.`);
     setView("checkin");
@@ -371,11 +426,9 @@ function OrganizerApp() {
 
   async function cobrar(reg) {
     setActionLoading(true);
-    if (MP_ACCESS_TOKEN && reg.payment_id && !reg.payment_id.startsWith("PAY-SIM")) {
-      await capturarPagoMP(reg.payment_id);
-    }
-    const all = getRegistros().map(r => r.id === reg.id ? { ...r, status: "noshow" } : r);
-    saveRegistros(all); setScanned(null); setScanCode(""); refresh();
+    if (MP_ACCESS_TOKEN && reg.payment_id) await capturarPagoMP(reg.payment_id);
+    await updateRegistroStatus(reg.id, "noshow");
+    setScanned(null); setScanCode(""); await refresh();
     setActionLoading(false);
     showToast(`✓ No-show — se cobró ${formatMoney(reg.monto)} a ${reg.nombre}.`);
     setView("checkin");
@@ -383,11 +436,9 @@ function OrganizerApp() {
 
   async function marcarNoShow(reg) {
     setActionLoading(true);
-    if (MP_ACCESS_TOKEN && reg.payment_id && !reg.payment_id.startsWith("PAY-SIM")) {
-      await capturarPagoMP(reg.payment_id);
-    }
-    const all = getRegistros().map(r => r.id === reg.id ? { ...r, status: "noshow" } : r);
-    saveRegistros(all); refresh();
+    if (MP_ACCESS_TOKEN && reg.payment_id) await capturarPagoMP(reg.payment_id);
+    await updateRegistroStatus(reg.id, "noshow");
+    await refresh();
     setActionLoading(false);
     showToast(`✓ No-show — se cobró ${formatMoney(reg.monto)} a ${reg.nombre}.`);
   }
@@ -421,6 +472,8 @@ function OrganizerApp() {
       </div>
     </div>
   );
+
+  if (pageLoading) return <div style={{ ...s.container, textAlign: "center", paddingTop: 60 }}><p style={{ color: "#666" }}>Cargando...</p></div>;
 
   return (
     <div style={{ ...s.container, maxWidth: 600 }}>
