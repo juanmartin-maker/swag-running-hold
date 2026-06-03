@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef } from "react";
 
 const ORGANIZER_PASSWORD = "swag2024";
+const MP_PUBLIC_KEY = import.meta.env.VITE_MP_PUBLIC_KEY;
+const MP_ACCESS_TOKEN = import.meta.env.VITE_MP_ACCESS_TOKEN;
 
 const COLORS = {
   hold: { bg: "#FAEEDA", text: "#854F0B", border: "#EF9F27" },
@@ -126,6 +128,58 @@ function EventoHeader({ config }) {
   );
 }
 
+async function crearHoldMP(monto, config) {
+  try {
+    const res = await fetch("https://api.mercadopago.com/v1/payments", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${MP_ACCESS_TOKEN}`,
+        "X-Idempotency-Key": generateId(),
+      },
+      body: JSON.stringify({
+        transaction_amount: monto,
+        description: config.nombre,
+        payment_method_id: "visa",
+        capture: false,
+        payer: { email: "test@test.com" },
+      }),
+    });
+    const data = await res.json();
+    return data;
+  } catch (e) {
+    return null;
+  }
+}
+
+async function capturarPagoMP(paymentId) {
+  try {
+    const res = await fetch(`https://api.mercadopago.com/v1/payments/${paymentId}`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${MP_ACCESS_TOKEN}`,
+      },
+      body: JSON.stringify({ capture: true }),
+    });
+    return await res.json();
+  } catch { return null; }
+}
+
+async function liberarHoldMP(paymentId) {
+  try {
+    const res = await fetch(`https://api.mercadopago.com/v1/payments/${paymentId}`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${MP_ACCESS_TOKEN}`,
+      },
+      body: JSON.stringify({ status: "cancelled" }),
+    });
+    return await res.json();
+  } catch { return null; }
+}
+
 export default function App() {
   const path = window.location.pathname;
   const isOrganizer = path.startsWith("/organizador");
@@ -134,12 +188,13 @@ export default function App() {
 
 function PublicApp() {
   const [step, setStep] = useState("form");
-  const [form, setForm] = useState({ nombre: "", email: "", dni: "" });
+  const [form, setForm] = useState({ nombre: "", email: "", dni: "", cardToken: "" });
   const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
   const [reg, setReg] = useState(null);
   const config = getConfig();
 
-  function handleSubmit() {
+  async function handleSubmit() {
     if (!form.nombre.trim() || !form.email.trim() || !form.dni.trim()) {
       setError("Por favor completá todos los campos.");
       return;
@@ -149,7 +204,24 @@ function PublicApp() {
       return;
     }
     setError("");
+    setLoading(true);
+
     const id = generateId();
+    let paymentId = `PAY-SIM-${id}`;
+    let mpStatus = "simulated";
+
+    if (MP_ACCESS_TOKEN) {
+      const mpRes = await crearHoldMP(config.monto, config);
+      if (mpRes && mpRes.id) {
+        paymentId = mpRes.id;
+        mpStatus = mpRes.status;
+      } else {
+        setError("Hubo un problema al procesar el pago. Intentá de nuevo.");
+        setLoading(false);
+        return;
+      }
+    }
+
     const newReg = {
       id, qr: `SWAG-${id}`,
       nombre: form.nombre.trim(),
@@ -157,11 +229,13 @@ function PublicApp() {
       dni: form.dni.trim(),
       monto: config.monto,
       status: "hold",
+      mpStatus,
       fecha: new Date().toISOString(),
-      payment_id: `PAY-SIM-${id}`,
+      payment_id: paymentId,
     };
     saveRegistros([newReg, ...getRegistros()]);
     setReg(newReg);
+    setLoading(false);
     setStep("confirmacion");
   }
 
@@ -211,12 +285,21 @@ function PublicApp() {
             <label style={s.label}>DNI</label>
             <input style={s.input} value={form.dni} onChange={e => setForm({ ...form, dni: e.target.value })} placeholder="Ej: 30123456" />
           </div>
+
           {error && <p style={s.error}>{error}</p>}
+
           <div style={s.warning}>
             Se hará un hold de <strong>{formatMoney(config.monto)}</strong> en tu tarjeta. Solo se cobra si no te presentás al evento.
           </div>
-          <button style={s.btn} onClick={handleSubmit}>
-            Reservar lugar — hold de {formatMoney(config.monto)}
+
+          <div style={{ background: "#f0f0f0", borderRadius: 8, padding: "12px 14px" }}>
+            <p style={{ fontSize: 13, color: "#666", margin: 0 }}>
+              💳 El formulario de pago con tarjeta se carga acá mediante Mercado Pago (Brick de MP). Próximamente.
+            </p>
+          </div>
+
+          <button style={{ ...s.btn, opacity: loading ? 0.7 : 1 }} onClick={handleSubmit} disabled={loading}>
+            {loading ? "Procesando..." : `Reservar lugar — hold de ${formatMoney(config.monto)}`}
           </button>
         </div>
       </div>
@@ -236,6 +319,7 @@ function OrganizerApp() {
   const [scanned, setScanned] = useState(null);
   const [scanError, setScanError] = useState("");
   const [toast, setToast] = useState("");
+  const [actionLoading, setActionLoading] = useState(false);
   const fileRef = useRef(null);
 
   function refresh() { setRegistros(getRegistros()); }
@@ -273,23 +357,38 @@ function OrganizerApp() {
     setScanned(found);
   }
 
-  function confirmar(reg) {
+  async function confirmar(reg) {
+    setActionLoading(true);
+    if (MP_ACCESS_TOKEN && !reg.payment_id.startsWith("PAY-SIM")) {
+      await liberarHoldMP(reg.payment_id);
+    }
     const all = getRegistros().map(r => r.id === reg.id ? { ...r, status: "presente" } : r);
     saveRegistros(all); setScanned(null); setScanCode(""); refresh();
+    setActionLoading(false);
     showToast(`✓ Presencia confirmada — ${reg.nombre}. Hold liberado.`);
     setView("checkin");
   }
 
-  function cobrar(reg) {
+  async function cobrar(reg) {
+    setActionLoading(true);
+    if (MP_ACCESS_TOKEN && !reg.payment_id.startsWith("PAY-SIM")) {
+      await capturarPagoMP(reg.payment_id);
+    }
     const all = getRegistros().map(r => r.id === reg.id ? { ...r, status: "noshow" } : r);
     saveRegistros(all); setScanned(null); setScanCode(""); refresh();
+    setActionLoading(false);
     showToast(`✓ No-show — se cobró ${formatMoney(reg.monto)} a ${reg.nombre}.`);
     setView("checkin");
   }
 
-  function marcarNoShow(reg) {
+  async function marcarNoShow(reg) {
+    setActionLoading(true);
+    if (MP_ACCESS_TOKEN && !reg.payment_id.startsWith("PAY-SIM")) {
+      await capturarPagoMP(reg.payment_id);
+    }
     const all = getRegistros().map(r => r.id === reg.id ? { ...r, status: "noshow" } : r);
     saveRegistros(all); refresh();
+    setActionLoading(false);
     showToast(`✓ No-show — se cobró ${formatMoney(reg.monto)} a ${reg.nombre}.`);
   }
 
@@ -391,10 +490,10 @@ function OrganizerApp() {
           </div>
           {scanned.status === "hold" ? (
             <div style={{ display: "flex", gap: 10 }}>
-              <button onClick={() => confirmar(scanned)} style={{ flex: 1, padding: 14, background: "#EAF3DE", color: "#3B6D11", border: "1px solid #639922", borderRadius: 8, fontSize: 15, cursor: "pointer", fontWeight: 500 }}>
+              <button onClick={() => confirmar(scanned)} disabled={actionLoading} style={{ flex: 1, padding: 14, background: "#EAF3DE", color: "#3B6D11", border: "1px solid #639922", borderRadius: 8, fontSize: 15, cursor: "pointer", fontWeight: 500, opacity: actionLoading ? 0.7 : 1 }}>
                 ✓ Confirmar presencia<br /><span style={{ fontSize: 12, fontWeight: 400 }}>Libera el hold</span>
               </button>
-              <button onClick={() => cobrar(scanned)} style={{ flex: 1, padding: 14, background: "#FCEBEB", color: "#A32D2D", border: "1px solid #E24B4A", borderRadius: 8, fontSize: 15, cursor: "pointer", fontWeight: 500 }}>
+              <button onClick={() => cobrar(scanned)} disabled={actionLoading} style={{ flex: 1, padding: 14, background: "#FCEBEB", color: "#A32D2D", border: "1px solid #E24B4A", borderRadius: 8, fontSize: 15, cursor: "pointer", fontWeight: 500, opacity: actionLoading ? 0.7 : 1 }}>
                 ✗ No se presentó<br /><span style={{ fontSize: 12, fontWeight: 400 }}>Cobra {formatMoney(scanned.monto)}</span>
               </button>
             </div>
@@ -422,7 +521,7 @@ function OrganizerApp() {
                 <Badge status={r.status} />
               </div>
               {r.status === "hold" && (
-                <button onClick={() => marcarNoShow(r)} style={{ fontSize: 11, padding: "4px 8px", color: "#A32D2D", border: "1px solid #E24B4A", borderRadius: 6, background: "transparent", cursor: "pointer", whiteSpace: "nowrap", marginLeft: 8 }}>
+                <button onClick={() => marcarNoShow(r)} disabled={actionLoading} style={{ fontSize: 11, padding: "4px 8px", color: "#A32D2D", border: "1px solid #E24B4A", borderRadius: 6, background: "transparent", cursor: "pointer", whiteSpace: "nowrap", marginLeft: 8 }}>
                   No-show
                 </button>
               )}
