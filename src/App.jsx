@@ -1,9 +1,9 @@
 import { useState, useEffect, useRef } from "react";
 
 const ORGANIZER_PASSWORD = "swag2024";
-const MP_ACCESS_TOKEN = import.meta.env.VITE_MP_ACCESS_TOKEN;
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
+const SERVER_URL = "https://swag-running-server-production.up.railway.app";
 
 const COLORS = {
   hold: { bg: "#FAEEDA", text: "#854F0B", border: "#EF9F27" },
@@ -84,6 +84,37 @@ async function updateRegistroStatus(id, status) {
   });
 }
 
+async function crearPreferencia(monto, nombre, email, dni, regId, eventoNombre) {
+  const res = await fetch(`${SERVER_URL}/crear-preferencia`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ monto, nombre, email, dni, regId, eventoNombre }),
+  });
+  return await res.json();
+}
+
+async function capturarPagoMP(paymentId) {
+  try {
+    const res = await fetch(`${SERVER_URL}/capturar-pago`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ paymentId }),
+    });
+    return await res.json();
+  } catch { return null; }
+}
+
+async function liberarHoldMP(paymentId) {
+  try {
+    const res = await fetch(`${SERVER_URL}/liberar-hold`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ paymentId }),
+    });
+    return await res.json();
+  } catch { return null; }
+}
+
 function Badge({ status }) {
   const c = COLORS[status] || COLORS.expirado;
   return (
@@ -158,51 +189,6 @@ function EventoHeader({ config }) {
       )}
     </div>
   );
-}
-
-async function crearPreferencia(monto, nombre, email, dni, regId, eventoNombre) {
-  const res = await fetch("https://api.mercadopago.com/checkout/preferences", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": `Bearer ${MP_ACCESS_TOKEN}`,
-    },
-    body: JSON.stringify({
-      items: [{ title: eventoNombre, quantity: 1, unit_price: monto, currency_id: "ARS" }],
-      payer: { name: nombre, email },
-      external_reference: regId,
-      back_urls: {
-        success: `https://swag-running-hold.vercel.app/confirmacion?id=${regId}`,
-        failure: `https://swag-running-hold.vercel.app/?error=1`,
-        pending: `https://swag-running-hold.vercel.app/confirmacion?id=${regId}`,
-      },
-      auto_return: "approved",
-      metadata: { dni, regId },
-    }),
-  });
-  return await res.json();
-}
-
-async function capturarPagoMP(paymentId) {
-  try {
-    const res = await fetch(`https://api.mercadopago.com/v1/payments/${paymentId}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${MP_ACCESS_TOKEN}` },
-      body: JSON.stringify({ capture: true }),
-    });
-    return await res.json();
-  } catch { return null; }
-}
-
-async function liberarHoldMP(paymentId) {
-  try {
-    const res = await fetch(`https://api.mercadopago.com/v1/payments/${paymentId}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${MP_ACCESS_TOKEN}` },
-      body: JSON.stringify({ status: "cancelled" }),
-    });
-    return await res.json();
-  } catch { return null; }
 }
 
 export default function App() {
@@ -303,19 +289,18 @@ function PublicApp() {
     };
     await saveRegistro(newReg);
 
-    if (MP_ACCESS_TOKEN) {
-      try {
-        const pref = await crearPreferencia(config.monto, form.nombre, form.email, form.dni, id, config.nombre);
-        if (pref && pref.init_point) {
-          window.location.href = pref.init_point;
-          return;
-        }
-      } catch {
-        setError("Hubo un problema al conectar con Mercado Pago. Intentá de nuevo.");
-        setLoading(false);
+    try {
+      const pref = await crearPreferencia(config.monto, form.nombre, form.email, form.dni, id, config.nombre);
+      if (pref && pref.init_point) {
+        window.location.href = pref.init_point;
         return;
       }
+    } catch {
+      setError("Hubo un problema al conectar con Mercado Pago. Intentá de nuevo.");
+      setLoading(false);
+      return;
     }
+
     window.location.href = `/confirmacion?id=${id}`;
   }
 
@@ -416,7 +401,7 @@ function OrganizerApp() {
 
   async function confirmar(reg) {
     setActionLoading(true);
-    if (MP_ACCESS_TOKEN && reg.payment_id) await liberarHoldMP(reg.payment_id);
+    if (reg.payment_id) await liberarHoldMP(reg.payment_id);
     await updateRegistroStatus(reg.id, "presente");
     setScanned(null); setScanCode(""); await refresh();
     setActionLoading(false);
@@ -426,7 +411,7 @@ function OrganizerApp() {
 
   async function cobrar(reg) {
     setActionLoading(true);
-    if (MP_ACCESS_TOKEN && reg.payment_id) await capturarPagoMP(reg.payment_id);
+    if (reg.payment_id) await capturarPagoMP(reg.payment_id);
     await updateRegistroStatus(reg.id, "noshow");
     setScanned(null); setScanCode(""); await refresh();
     setActionLoading(false);
@@ -436,7 +421,7 @@ function OrganizerApp() {
 
   async function marcarNoShow(reg) {
     setActionLoading(true);
-    if (MP_ACCESS_TOKEN && reg.payment_id) await capturarPagoMP(reg.payment_id);
+    if (reg.payment_id) await capturarPagoMP(reg.payment_id);
     await updateRegistroStatus(reg.id, "noshow");
     await refresh();
     setActionLoading(false);
