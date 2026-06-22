@@ -3,7 +3,6 @@ import { useState, useEffect, useRef } from "react";
 const ORGANIZER_PASSWORD = "swag2024";
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
-const SERVER_URL = "https://swag-running-server-production.up.railway.app";
 
 const COLORS = {
   hold: { bg: "#FAEEDA", text: "#854F0B", border: "#EF9F27" },
@@ -85,7 +84,7 @@ async function updateRegistroStatus(id, status) {
 }
 
 async function crearPreferencia(monto, nombre, email, dni, regId, eventoNombre) {
-  const res = await fetch(`${SERVER_URL}/crear-preferencia`, {
+  const res = await fetch("/api/crear-preferencia", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ monto, nombre, email, dni, regId, eventoNombre }),
@@ -95,7 +94,7 @@ async function crearPreferencia(monto, nombre, email, dni, regId, eventoNombre) 
 
 async function capturarPagoMP(paymentId) {
   try {
-    const res = await fetch(`${SERVER_URL}/capturar-pago`, {
+    const res = await fetch("/api/capturar-pago", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ paymentId }),
@@ -106,7 +105,7 @@ async function capturarPagoMP(paymentId) {
 
 async function liberarHoldMP(paymentId) {
   try {
-    const res = await fetch(`${SERVER_URL}/liberar-hold`, {
+    const res = await fetch("/api/liberar-hold", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ paymentId }),
@@ -294,14 +293,14 @@ function PublicApp() {
       if (pref && pref.init_point) {
         window.location.href = pref.init_point;
         return;
+      } else {
+        setError("Hubo un problema al conectar con Mercado Pago. Intentá de nuevo.");
+        setLoading(false);
       }
     } catch {
       setError("Hubo un problema al conectar con Mercado Pago. Intentá de nuevo.");
       setLoading(false);
-      return;
     }
-
-    window.location.href = `/confirmacion?id=${id}`;
   }
 
   return (
